@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VENGLIC Site Issuer</title>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f5f3ee;color:#151515;font-family:Inter,Arial,sans-serif;display:grid;place-items:center;padding:24px}
+.card{width:min(760px,100%);background:#fff;border:1px solid #ddd9d0;border-radius:24px;padding:32px;box-shadow:0 18px 60px #0000000d}
+.brand{font-size:12px;font-weight:900;letter-spacing:.18em}.eyebrow{margin-top:30px;font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#777}
+h1{font-size:clamp(38px,7vw,64px);line-height:.95;letter-spacing:-.06em;margin:10px 0 12px}
+p{color:#666;line-height:1.6}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px}.full{grid-column:1/-1}
+label{display:block;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;margin:0 0 7px}
+input{width:100%;padding:14px;border:1px solid #d7d3ca;border-radius:11px;background:#fff;font:inherit;outline:0}input:focus{border-color:#111;box-shadow:0 0 0 3px #0000000a}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px}button{border:0;border-radius:11px;padding:14px 16px;background:#151515;color:#fff;font-weight:800;cursor:pointer}button.secondary{background:#eeeae2;color:#151515}button:disabled{opacity:.5;cursor:not-allowed}
+#status{margin-top:16px;padding:14px;border-radius:11px;background:#f1efe9;color:#666;font-size:13px;white-space:pre-line;line-height:1.55}.ok{background:#eaf5eb!important;color:#24572b!important}.err{background:#faeaea!important;color:#8a2626!important}
+#downloads{display:none;margin-top:22px;border-top:1px solid #e2ded6;padding-top:22px}.downloads{display:grid;grid-template-columns:1fr 1fr;gap:10px}.downloads button{background:#fff;color:#151515;border:1px solid #d7d3ca}
+.note{font-size:11px;color:#888;margin-top:22px}.keybox{margin-top:18px;padding:14px;border:1px solid #e1ddd5;border-radius:11px;background:#faf9f6;font-size:12px;line-height:1.55}
+@media(max-width:600px){.grid,.actions,.downloads{grid-template-columns:1fr}.full{grid-column:auto}}
+</style>
+</head>
+<body>
+<main class="card">
+<div class="brand">VENGLIC</div>
+<div class="eyebrow">Private issuer</div>
+<h1>Site Issuer</h1>
+<p>Issue signed site credentials using the VENGLIC ECDSA P-256 signing system.</p>
+
+<div class="keybox">
+<b>First time?</b> Click <b>New Master Key</b> once and immediately download
+<code>issuer-key.json</code>. Keep it private. If you already have a VENGLIC
+issuer-key.json, use <b>Load Master Key</b> instead. Never upload the master key
+or issuer-private.pem to a customer site.
+</div>
+
+<div class="actions">
+<button id="newKey" type="button">New Master Key</button>
+<button id="loadKey" class="secondary" type="button">Load Master Key</button>
+<input id="keyFile" type="file" accept=".json,application/json" hidden>
+</div>
+
+<div class="grid">
+<div class="full">
+<label for="domain">Site domain</label>
+<input id="domain" placeholder="customer.com" autocomplete="off">
+</div>
+<div>
+<label for="expires">Expiry date</label>
+<input id="expires" type="date">
+</div>
+<div>
+<label for="recordId">Record ID</label>
+<input id="recordId" placeholder="VEN-004" autocomplete="off">
+</div>
+</div>
+
+<button id="generate" type="button" style="margin-top:18px;width:100%">Generate License</button>
+<div id="status">No master key loaded and no license generated.</div>
+
+<section id="downloads">
+<h2 style="margin:0 0 12px;font-size:20px">Files ready</h2>
+<div class="downloads">
+<button id="dlLicense">Download data.json</button>
+<button id="dlJs">Download runtime.js</button>
+<button id="dlMaster">Download issuer-key.json</button>
+<button id="dlPem">Download issuer-private.pem</button>
+</div>
+<p class="note">Customer deployment: <b>index.html + data.json + js/runtime.js</b>.<br>
+Private files: <b>issuer-key.json + issuer-private.pem</b>. Keep those private.</p>
+</section>
+</main>
+
+<script>
+"use strict";
+
+const $ = id => document.getElementById(id);
+let privateJwk = null;
+let publicJwk = null;
+let output = {};
+
+function status(text,type=""){
+  $("status").textContent=text;
+  $("status").className=type;
+}
+
+function normalizeDomain(value){
+  return String(value||"").trim().toLowerCase()
+    .replace(/^https?:\/\//,"")
+    .replace(/^www\./,"")
+    .split("/")[0].split(":")[0];
+}
+
+function validDomain(d){
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(d);
+}
+
+function validDate(d){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  const x=new Date(d+"T00:00:00Z");
+  return !Number.isNaN(x.getTime()) && x.toISOString().slice(0,10)===d;
+}
+
+function validId(id){
+  return /^[A-Za-z0-9_-]{1,64}$/.test(id);
+}
+
+function b64(bytes){
+  let s="";
+  const a=new Uint8Array(bytes);
+  for(let i=0;i<a.length;i+=0x8000)
+    s+=String.fromCharCode(...a.subarray(i,i+0x8000));
+  return btoa(s);
+}
+
+function pem(b64data){
+  const lines=b64data.match(/.{1,64}/g)||[];
+  return "-----BEGIN PRIVATE KEY-----\n"+lines.join("\n")+"\n-----END PRIVATE KEY-----\n";
+}
+
+function download(name,data,type){
+  const url=URL.createObjectURL(new Blob([data],{type:type||"application/octet-stream"}));
+  const a=document.createElement("a");
+  a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+
+async function makeNewMasterKey(){
+  const pair=await crypto.subtle.generateKey(
+    {name:"ECDSA",namedCurve:"P-256"},true,["sign","verify"]
+  );
+  privateJwk=await crypto.subtle.exportKey("jwk",pair.privateKey);
+  publicJwk=await crypto.subtle.exportKey("jwk",pair.publicKey);
+  status("New master key created. Download issuer-key.json now and keep it secret.","ok");
+  prepareMasterOutputs();
+}
+
+async function loadMasterKey(file){
+  const text=await file.text();
+  const data=JSON.parse(text);
+
+  if(data.version!==1 || !data.privateKey || !data.publicKey)
+    throw new Error("Invalid VENGLIC issuer-key.json.");
+
+  await crypto.subtle.importKey(
+    "jwk",data.privateKey,{name:"ECDSA",namedCurve:"P-256"},false,["sign"]
+  );
+  await crypto.subtle.importKey(
+    "jwk",data.publicKey,{name:"ECDSA",namedCurve:"P-256"},false,["verify"]
+  );
+
+  privateJwk=data.privateKey;
+  publicJwk=data.publicKey;
+
+  status("Master key loaded successfully. You can now issue licenses.","ok");
+  prepareMasterOutputs();
+}
+
+function prepareMasterOutputs(){
+  output.master=JSON.stringify({
+    version:1,
+    algorithm:"ECDSA P-256 SHA-256",
+    privateKey:privateJwk,
+    publicKey:publicJwk
+  },null,2)+"\n";
+}
+
+function makeVerifier(pub){
+  const publicKey=JSON.stringify({
+    kty:pub.kty,x:pub.x,y:pub.y,crv:pub.crv
+  });
+
+  return `/* VENGLIC RUNTIME */
+(function(){
+"use strict";
+const K=${publicKey};
+const F="/data.json";
+let ok=false,r=null;
+
+function n(v){
+  return String(v||"").trim().toLowerCase()
+    .replace(/^https?:\\/\\//,"")
+    .replace(/^www\\./,"")
+    .split("/")[0].split(":")[0];
+}
+function b(v){
+  const x=atob(v),a=new Uint8Array(x.length);
+  for(let i=0;i<x.length;i++)a[i]=x.charCodeAt(i);
+  return a;
+}
+async function run(){
+  try{
+    const q=await fetch(F+"?v="+Date.now(),{cache:"no-store"});
+    if(!q.ok)throw 0;
+    r=await q.json();
+    if(n(location.hostname)!==n(r.d))throw 0;
+    if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(r.e))throw 0;
+    const t=new Date(r.e+"T23:59:59.999Z");
+    if(Number.isNaN(t.getTime())||Date.now()>t.getTime())throw 0;
+
+    const k=await crypto.subtle.importKey(
+      "jwk",K,{name:"ECDSA",namedCurve:"P-256"},false,["verify"]
+    );
+    const p={v:r.v,d:r.d,e:r.e,i:r.i};
+    ok=await crypto.subtle.verify(
+      {name:"ECDSA",hash:"SHA-256"},
+      k,b(r.signature),
+      new TextEncoder().encode(JSON.stringify(p))
+    );
+    if(!ok)throw 0;
+    document.documentElement.classList.add("x-ready");
+  }catch(_){ok=false}
+
+  if(!ok){
+    document.documentElement.classList.add("x-failed");
+  }
+
+  if(!ok){
+    return;
+  }
+
+}
+window.VenglicRuntime={ok:()=>ok,get:()=>r};
+if(document.readyState==="loading")
+  document.addEventListener("DOMContentLoaded",run);
+else run();
+})();`;
+}
+
+$("newKey").onclick=async()=>{
+  try{
+    $("newKey").disabled=true;
+    await makeNewMasterKey();
+  }catch(e){status("ERROR: "+e.message,"err")}
+  finally{$("newKey").disabled=false}
+};
+
+$("loadKey").onclick=()=>$("keyFile").click();
+
+$("keyFile").onchange=async e=>{
+  try{
+    if(!e.target.files[0]) return;
+    await loadMasterKey(e.target.files[0]);
+  }catch(x){status("ERROR: "+x.message,"err")}
+  e.target.value="";
+};
+
+$("generate").onclick=async()=>{
+  try{
+    const domain=normalizeDomain($("domain").value);
+    const expires=$("expires").value;
+    const recordId=$("recordId").value.trim();
+
+    if(!privateJwk||!publicJwk)
+      throw new Error("Create or load a master key first.");
+
+    if(!validDomain(domain))
+      throw new Error("Enter a valid domain such as venglicin.netlify.app.");
+
+    if(!validDate(expires))
+      throw new Error("Choose a valid expiry date.");
+
+    if(!validId(recordId))
+      throw new Error("Record ID may contain letters, numbers, hyphens and underscores only.");
+
+    $("generate").disabled=true;
+    status("Signing license…");
+
+    const payload={
+      v:1,
+      d:domain,
+      e:expires,
+      i:recordId
+    };
+
+    const key=await crypto.subtle.importKey(
+      "jwk",privateJwk,{name:"ECDSA",namedCurve:"P-256"},false,["sign"]
+    );
+
+    const signature=await crypto.subtle.sign(
+      {name:"ECDSA",hash:"SHA-256"},
+      key,
+      new TextEncoder().encode(JSON.stringify(payload))
+    );
+
+    const license={...payload,signature:b64(signature)};
+
+    output.data=JSON.stringify(license,null,2)+"\n";
+    output.js=makeVerifier(publicJwk);
+
+    const exportable=await crypto.subtle.importKey(
+      "jwk",privateJwk,{name:"ECDSA",namedCurve:"P-256"},true,["sign"]
+    );
+    const der=await crypto.subtle.exportKey("pkcs8",exportable);
+    output.pem=pem(b64(der));
+    prepareMasterOutputs();
+
+    $("downloads").style.display="block";
+    status(
+      "SUCCESS — license signed successfully.\n\n"+
+      "Site files: data.json + runtime.js\n"+
+      "Keep private: issuer-key.json + issuer-private.pem","ok"
+    );
+  }catch(e){
+    console.error(e);
+    status("ERROR: "+e.message,"err");
+  }finally{
+    $("generate").disabled=false;
+  }
+};
+
+$("dlLicense").onclick=()=>download("data.json",output.data,"application/json");
+$("dlJs").onclick=()=>download("runtime.js",output.js,"text/javascript");
+$("dlMaster").onclick=()=>download("issuer-key.json",output.master,"application/json");
+$("dlPem").onclick=()=>download("issuer-private.pem",output.pem,"application/x-pem-file");
+</script>
+</body>
+</html>
